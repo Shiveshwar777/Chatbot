@@ -29,6 +29,9 @@ const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 app.use(cors());
 app.use(express.json());
 
+// Serve static frontend files from 'public' folder
+app.use(express.static(path.join(__dirname, "public")));
+
 function getSession(sessionId) {
   if (!sessions[sessionId]) {
     sessions[sessionId] = {
@@ -120,7 +123,6 @@ When explaining anything that includes lists—like steps, ingredients, examples
 
 Nova, follow this style exactly when replying.
 `;
-
 
   let contextPrefix = "";
   if (session.name) {
@@ -219,6 +221,11 @@ app.post("/reset", (req, res) => {
 
   saveSessionsToFile();
   res.json({ message: "Session reset but user info kept." });
+});
+
+// Catch-all route to serve index.html for any other routes (for SPA support)
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
 // Start Server
