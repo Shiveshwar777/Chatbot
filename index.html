@@ -414,7 +414,7 @@
       async function loadChatHistory() {
         try {
           const response = await fetch(
-            `http://localhost:3000/history/${sessionId}`
+            `https://chatbot-mtog.onrender.com/history/${sessionId}`
           );
           const data = await response.json();
           data.history.forEach((entry) => {
@@ -433,11 +433,14 @@
         userInput.value = "";
 
         try {
-          const response = await fetch("http://localhost:3000/history/${sessionId}", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ message: input, sessionId }),
-          });
+          const response = await fetch(
+            "https://chatbot-mtog.onrender.com/chat",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ message: input, sessionId }),
+            }
+          );
           const data = await response.json();
 
           if (data.reply) {
