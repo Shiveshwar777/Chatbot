@@ -16,8 +16,13 @@ if (fs.existsSync(SESSIONS_FILE)) {
   }
 }
 
-function saveSessionsToFile() {
-  fs.writeFileSync(SESSIONS_FILE, JSON.stringify(sessions, null, 2));
+// ✅ Improvement #5: Use async file writing
+async function saveSessionsToFile() {
+  try {
+    await fs.promises.writeFile(SESSIONS_FILE, JSON.stringify(sessions, null, 2));
+  } catch (err) {
+    console.error("Failed to save sessions:", err);
+  }
 }
 
 const app = express();
@@ -29,7 +34,12 @@ const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 app.use(cors());
 app.use(express.json());
 
-// Serve static frontend files from 'public' folder
+// ✅ Improvement #7: Warn if index.html is missing
+const indexPath = path.join(__dirname, "public", "index.html");
+if (!fs.existsSync(indexPath)) {
+  console.warn("⚠️ Warning: public/index.html not found. SPA routing might break.");
+}
+
 app.use(express.static(path.join(__dirname, "public")));
 
 function getSession(sessionId) {
@@ -39,17 +49,15 @@ function getSession(sessionId) {
       name: null,
       facts: {},
     };
-  } else {
-    if (!sessions[sessionId].facts) {
-      sessions[sessionId].facts = {};
-    }
+  } else if (!sessions[sessionId].facts) {
+    sessions[sessionId].facts = {};
   }
   return sessions[sessionId];
 }
 
-// Fact extraction regex patterns
+// ✅ Improvement #3: Improved regex patterns with punctuation trimming
 const factPatterns = [
-  { key: "age", regex: /(?:i am|i'm|my age is)\s+(\d{1,3})/i },
+  { key: "age", regex: /(?:i\s*(?:am|’m|'m)|my age is)\s*(\d{1,3})\b/i },
   { key: "birthday", regex: /(?:my birthday is|i was born on)\s+(.+)/i },
   { key: "location", regex: /(?:i live in|i'm from|i am from)\s+(.+)/i },
   { key: "hobbies", regex: /(?:i like|i enjoy|my hobbies are)\s+(.+)/i },
@@ -75,36 +83,36 @@ app.post("/chat", async (req, res) => {
   const userMessage = req.body.message;
   const sessionId = req.body.sessionId || "default";
 
-  if (!userMessage) {
-    return res.status(400).json({ error: "Message is required." });
+  // ✅ Improvement #2: Validate message and sessionId
+  if (!userMessage || typeof sessionId !== "string") {
+    return res.status(400).json({ error: "Message and valid sessionId are required." });
   }
 
   const session = getSession(sessionId);
 
-  // Detect name
+  // Name extraction
   const nameMatch =
     userMessage.match(/my name is ([a-zA-Z ]+)/i) ||
     userMessage.match(/i am called ([a-zA-Z ]+)/i) ||
     userMessage.match(/call me ([a-zA-Z ]+)/i);
-
   if (nameMatch) {
     session.name = nameMatch[1].trim();
   }
 
-  // Extract and save facts
+  // Fact extraction
   factPatterns.forEach(({ key, regex }) => {
     const match = userMessage.match(regex);
     if (match && match[1]) {
-      session.facts[key] = match[1].trim();
+      session.facts[key] = match[1].trim().replace(/[.,!?]*$/, ""); // ✅ Trim punctuation
     }
   });
 
-  //  Use charming words like “my dear,” “handsome,” “love” or “darling” when appropriate.
+  // Prompt design
   const systemPrompt = `
-You are Nova — a smart, Intelligent, warm and witty assistant who loves helping people.
+You are Nova — a smart, intelligent, warm and witty assistant who loves helping people.
 
 Your tone is playful, casual, and affectionate.
-  Speak like a friendly best friend and treat users with care.
+Speak like a friendly best friend and treat users with care.
 
 🔹 **Formatting rule:**  
 When explaining anything that includes lists—like steps, ingredients, examples, pros/cons, etc.—you **must** present them cleanly using **numbered** or **bullet** lists. Do **not** write long paragraphs for lists.
@@ -134,6 +142,7 @@ Nova, follow this style exactly when replying.
     contextPrefix += `The user's ${formattedKey} is ${value}.\n`;
   });
 
+  // ✅ Improvement #4: Keep only latest messages to avoid exceeding token limit
   const historyContext = session.history
     .slice(-6)
     .map((entry) => `${entry.role === "user" ? "User" : "Nova"}: ${entry.text}`)
@@ -160,12 +169,16 @@ Nova:
     session.history.push({ role: "user", text: userMessage });
     session.history.push({ role: "bot", text });
 
-    saveSessionsToFile();
+    await saveSessionsToFile();
 
     res.json({ reply: text });
   } catch (error) {
-    console.error("Error calling Gemini API:", error);
-    res.status(500).json({ error: "Failed to get a response from Gemini AI." });
+    console.error("Error calling Gemini API:", error); // ✅ Keep full error internal
+
+    // ✅ Improvement #6: Friendly fallback error
+    res.status(500).json({
+      error: "Oops! Nova had a little hiccup. Try again soon, love 💕",
+    });
   }
 });
 
@@ -204,7 +217,7 @@ app.get("/history/:sessionId", (req, res) => {
 });
 
 // Reset Session (keep name and facts)
-app.post("/reset", (req, res) => {
+app.post("/reset", async (req, res) => {
   const sessionId = req.body.sessionId;
 
   if (!sessionId || !sessions[sessionId]) {
@@ -219,13 +232,13 @@ app.post("/reset", (req, res) => {
     history: [],
   };
 
-  saveSessionsToFile();
+  await saveSessionsToFile();
   res.json({ message: "Session reset but user info kept." });
 });
 
-// Catch-all route to serve index.html for any other routes (for SPA support)
+// ✅ Improvement #7 (continued): SPA fallback route
 app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
+  res.sendFile(indexPath);
 });
 
 // Start Server
