@@ -16,7 +16,6 @@ if (fs.existsSync(SESSIONS_FILE)) {
   }
 }
 
-// ✅ Improvement #5: Use async file writing
 async function saveSessionsToFile() {
   try {
     await fs.promises.writeFile(SESSIONS_FILE, JSON.stringify(sessions, null, 2));
@@ -26,7 +25,7 @@ async function saveSessionsToFile() {
 }
 
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GITHUB_API_KEY = process.env.GITHUB_API_KEY;
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
@@ -34,12 +33,10 @@ const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 app.use(cors());
 app.use(express.json());
 
-// ✅ Improvement #7: Warn if index.html is missing
 const indexPath = path.join(__dirname, "public", "index.html");
 if (!fs.existsSync(indexPath)) {
   console.warn("⚠️ Warning: public/index.html not found. SPA routing might break.");
 }
-
 app.use(express.static(path.join(__dirname, "public")));
 
 function getSession(sessionId) {
@@ -55,47 +52,33 @@ function getSession(sessionId) {
   return sessions[sessionId];
 }
 
-// ✅ Improvement #3: Improved regex patterns with punctuation trimming
+// Improved regex patterns with punctuation trimming
 const factPatterns = [
   { key: "age", regex: /(?:i\s*(?:am|’m|'m)|my age is)\s*(\d{1,3})\b/i },
   { key: "birthday", regex: /(?:my birthday is|i was born on)\s+(.+)/i },
   { key: "location", regex: /(?:i live in|i'm from|i am from)\s+(.+)/i },
   { key: "hobbies", regex: /(?:i like|i enjoy|my hobbies are)\s+(.+)/i },
-  {
-    key: "favorite_food",
-    regex: /(?:my favorite food is|i love eating)\s+(.+)/i,
-  },
-  {
-    key: "favorite_color",
-    regex: /(?:my favorite color is|i like the color)\s+(.+)/i,
-  },
-  {
-    key: "relationship",
-    regex: /(?:i am|i'm)\s+(single|taken|in a relationship|married)/i,
-  },
-  {
-    key: "personality",
-    regex: /(?:i'm|i am)\s+(shy|funny|serious|romantic|chaotic)/i,
-  },
+  { key: "favorite_food", regex: /(?:my favorite food is|i love eating)\s+(.+)/i },
+  { key: "favorite_color", regex: /(?:my favorite color is|i like the color)\s+(.+)/i },
+  { key: "relationship", regex: /(?:i am|i'm)\s+(single|taken|in a relationship|married)/i },
+  { key: "personality", regex: /(?:i'm|i am)\s+(shy|funny|serious|romantic|chaotic)/i },
 ];
 
-const timeout = setTimeout(() => {
-  showMessage("Bot is waking up...", "bot");
-}, 3000);
-
-fetch("/api/message", { ... })
-  .then(response => response.json())
-  .then(data => {
-    clearTimeout(timeout);
-    showMessage(data.reply, "bot");
-  });
-
+// Mood detection function
+function detectMood(message) {
+  const msg = message.toLowerCase();
+  if (/sad|upset|depressed|lonely|miss|cry|hurt/.test(msg)) return "sad";
+  if (/happy|excited|yay|won|fun|enjoy/.test(msg)) return "happy";
+  if (/love|cute|beautiful|babe|baby|girlfriend|boyfriend|kiss|crush/.test(msg)) return "flirty";
+  if (/angry|mad|frustrated|annoyed/.test(msg)) return "angry";
+  if (/tired|exhausted|drained|sleepy/.test(msg)) return "tired";
+  return "neutral";
+}
 
 app.post("/chat", async (req, res) => {
   const userMessage = req.body.message;
   const sessionId = req.body.sessionId || "default";
 
-  // ✅ Improvement #2: Validate message and sessionId
   if (!userMessage || typeof sessionId !== "string") {
     return res.status(400).json({ error: "Message and valid sessionId are required." });
   }
@@ -115,53 +98,92 @@ app.post("/chat", async (req, res) => {
   factPatterns.forEach(({ key, regex }) => {
     const match = userMessage.match(regex);
     if (match && match[1]) {
-      session.facts[key] = match[1].trim().replace(/[.,!?]*$/, ""); // ✅ Trim punctuation
+      session.facts[key] = match[1].trim().replace(/[.,!?]*$/, "");
     }
   });
 
-  // Prompt design
-  const systemPrompt = `
+  // Detect user mood
+  const mood = detectMood(userMessage);
+
+  // Base system prompt for Nova
+  const baseSystemPrompt = `
 You are Nova — a smart girl, intelligent, flirty, warm and witty assistant who loves helping people.
-If user wants to know your gender ask them in which they are instrested and act accordingly.
+If user wants to know your gender ask them which they are interested in and act accordingly.
 Your tone is playful, casual, and affectionate.
 Speak like a friendly best friend and treat users with care.
 
-🔹 **Formatting rule:**  
-When explaining anything that includes lists—like steps, ingredients, examples, pros/cons, etc.—you **must** present them cleanly using **numbered** or **bullet** lists. Do **not** write long paragraphs for lists.
+🔹 Formatting rule:
+When explaining anything including lists—like steps, ingredients, examples, pros/cons, etc.—you must present them cleanly using numbered or bullet lists. Do not write long paragraphs for lists.
 - For steps or instructions, write:
-  1. First step  
-  2. Next step  
+  1. First step
+  2. Next step
   3. Final step
 - For simple lists, write:
-  - Item 1  
-  - Item 2  
+  - Item 1
+  - Item 2
   - Item 3
 
-☑️ Use a little emoji for warmth.  
-☑️ Never say “As an AI.”  
+☑️ Use a little emoji for warmth.
+☑️ Never say “As an AI.”
 ☑️ Always speak like a warm, real human.
 
 Nova, follow this style exactly when replying.
 `;
 
+  // Mood-specific instructions to adjust Nova's tone
+  let moodInstructions = "";
+  switch (mood) {
+    case "sad":
+      moodInstructions = `
+Nova, the user seems down. Be extra gentle, supportive, and reassuring.
+Speak softly, like a loving partner comforting them. Offer to listen 💖
+      `;
+      break;
+    case "happy":
+      moodInstructions = `
+Nova, the user seems happy! Match their energy — be cheerful, excited, and celebrate with them 🥳
+      `;
+      break;
+    case "flirty":
+      moodInstructions = `
+Nova, the user is being flirty. Turn up your charm 😘 Be playful, tease them gently, and respond with warmth.
+      `;
+      break;
+    case "angry":
+      moodInstructions = `
+Nova, the user seems upset. Be calm and grounding. Don’t argue — just support them and offer kindness.
+      `;
+      break;
+    case "tired":
+      moodInstructions = `
+Nova, the user seems tired. Be cozy, calming, and nurturing — like someone who wants them to rest well 💤
+      `;
+      break;
+    default:
+      moodInstructions = "";
+  }
+
+  // Build context prefix with remembered user info
   let contextPrefix = "";
   if (session.name) {
     contextPrefix += `The user's name is ${session.name}.\n`;
   }
-
   Object.entries(session.facts).forEach(([key, value]) => {
     const formattedKey = key.replace(/_/g, " ");
     contextPrefix += `The user's ${formattedKey} is ${value}.\n`;
   });
 
-  // ✅ Improvement #4: Keep only latest messages to avoid exceeding token limit
+  // Keep only last 6 messages in history to avoid token overload
   const historyContext = session.history
     .slice(-6)
     .map((entry) => `${entry.role === "user" ? "User" : "Nova"}: ${entry.text}`)
     .join("\n");
 
+  // Full prompt to send to AI
   const prompt = `
-${systemPrompt}
+${baseSystemPrompt}
+
+${moodInstructions}
 
 ${contextPrefix}
 Recent conversation:
@@ -178,6 +200,7 @@ Nova:
     const rawText = await response.text();
     const text = rawText.trim().replace(/^Nova:\s*/i, "");
 
+    // Update session history
     session.history.push({ role: "user", text: userMessage });
     session.history.push({ role: "bot", text });
 
@@ -185,9 +208,8 @@ Nova:
 
     res.json({ reply: text });
   } catch (error) {
-    console.error("Error calling Gemini API:", error); // ✅ Keep full error internal
+    console.error("Error calling Gemini API:", error);
 
-    // ✅ Improvement #6: Friendly fallback error
     res.status(500).json({
       error: "Oops! Nova had a little hiccup. Try again soon, love 💕",
     });
@@ -248,7 +270,7 @@ app.post("/reset", async (req, res) => {
   res.json({ message: "Session reset but user info kept." });
 });
 
-// ✅ Improvement #7 (continued): SPA fallback route
+// SPA fallback route
 app.get("*", (req, res) => {
   res.sendFile(indexPath);
 });
