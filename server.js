@@ -4,10 +4,20 @@ const cors = require("cors");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const fs = require("fs");
 const path = require("path");
-const fetch = require("node-fetch");
 
+// Constants
 const SESSIONS_FILE = path.join(__dirname, "sessions.json");
+const app = express();
+const port = process.env.PORT || 3000;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GITHUB_API_KEY = process.env.GITHUB_API_KEY;
+const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 
+// Middleware
+app.use(cors());
+app.use(express.json());
+
+// Load sessions from file
 let sessions = {};
 if (fs.existsSync(SESSIONS_FILE)) {
   const fileContent = fs.readFileSync(SESSIONS_FILE, "utf-8");
@@ -18,27 +28,32 @@ if (fs.existsSync(SESSIONS_FILE)) {
 
 async function saveSessionsToFile() {
   try {
-    await fs.promises.writeFile(SESSIONS_FILE, JSON.stringify(sessions, null, 2));
+    await fs.promises.writeFile(
+      SESSIONS_FILE,
+      JSON.stringify(sessions, null, 2)
+    );
   } catch (err) {
     console.error("Failed to save sessions:", err);
   }
 }
 
-const app = express();
-const port = process.env.PORT || 3000;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GITHUB_API_KEY = process.env.GITHUB_API_KEY;
-const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+// Logger
+app.use((req, res, next) => {
+  console.log(`Incoming request: ${req.method} ${req.path}`);
+  next();
+});
 
-app.use(cors());
-app.use(express.json());
-
+// Serve static files if public/index.html exists
 const indexPath = path.join(__dirname, "public", "index.html");
-if (!fs.existsSync(indexPath)) {
-  console.warn("⚠️ Warning: public/index.html not found. SPA routing might break.");
+const serveStatic = fs.existsSync(indexPath);
+if (!serveStatic) {
+  console.warn(
+    "⚠️ Warning: public/index.html not found. SPA routing fallback disabled."
+  );
 }
 app.use(express.static(path.join(__dirname, "public")));
 
+// Session utilities
 function getSession(sessionId) {
   if (!sessions[sessionId]) {
     sessions[sessionId] = {
@@ -52,40 +67,46 @@ function getSession(sessionId) {
   return sessions[sessionId];
 }
 
-// Improved regex patterns with punctuation trimming
+// Fact patterns
 const factPatterns = [
-  { key: "age", regex: /(?:i\s*(?:am|’m|'m)|my age is)\s*(\d{1,3})\b/i },
-  { key: "birthday", regex: /(?:my birthday is|i was born on)\s+(.+)/i },
-  { key: "location", regex: /(?:i live in|i'm from|i am from)\s+(.+)/i },
-  { key: "hobbies", regex: /(?:i like|i enjoy|my hobbies are)\s+(.+)/i },
-  { key: "favorite_food", regex: /(?:my favorite food is|i love eating)\s+(.+)/i },
-  { key: "favorite_color", regex: /(?:my favorite color is|i like the color)\s+(.+)/i },
-  { key: "relationship", regex: /(?:i am|i'm)\s+(single|taken|in a relationship|married)/i },
-  { key: "personality", regex: /(?:i'm|i am)\s+(shy|funny|serious|romantic|chaotic)/i },
+  { key: "age", regex: /i am (\d{1,3}) ?(years old)?/i },
+  { key: "location", regex: /i live in ([a-zA-Z\s]+)/i },
+  { key: "hobbies", regex: /i (like|love|enjoy) ([a-zA-Z\s]+)/i },
+  { key: "favorite_color", regex: /my favorite color is ([a-zA-Z\s]+)/i },
+  { key: "favorite_food", regex: /i (like|love) eating ([a-zA-Z\s]+)/i },
+  {
+    key: "relationship",
+    regex: /i (have|am in) a (boyfriend|girlfriend|relationship)/i,
+  },
+  { key: "birthday", regex: /my birthday is ([a-zA-Z0-9\s]+)/i },
+  { key: "personality", regex: /i am (introvert|extrovert|ambivert)/i },
 ];
 
-// Mood detection function
+// Mood detection
 function detectMood(message) {
-  const msg = message.toLowerCase();
-  if (/sad|upset|depressed|lonely|miss|cry|hurt/.test(msg)) return "sad";
-  if (/happy|excited|yay|won|fun|enjoy/.test(msg)) return "happy";
-  if (/love|cute|beautiful|babe|baby|girlfriend|boyfriend|kiss|crush/.test(msg)) return "flirty";
-  if (/angry|mad|frustrated|annoyed/.test(msg)) return "angry";
-  if (/tired|exhausted|drained|sleepy/.test(msg)) return "tired";
+  const lower = message.toLowerCase();
+  if (/sad|upset|depressed|unhappy/.test(lower)) return "sad";
+  if (/happy|yay|awesome|great|good/.test(lower)) return "happy";
+  if (/angry|mad|furious|irritated/.test(lower)) return "angry";
+  if (/flirt|cute|pretty|hot|date|kiss|love you/.test(lower)) return "flirty";
+  if (/tired|sleepy|exhausted/.test(lower)) return "tired";
   return "neutral";
 }
 
+// Chat route
 app.post("/chat", async (req, res) => {
   const userMessage = req.body.message;
   const sessionId = req.body.sessionId || "default";
 
   if (!userMessage || typeof sessionId !== "string") {
-    return res.status(400).json({ error: "Message and valid sessionId are required." });
+    return res
+      .status(400)
+      .json({ error: "Message and valid sessionId are required." });
   }
 
   const session = getSession(sessionId);
 
-  // Name extraction
+  // Capture name
   const nameMatch =
     userMessage.match(/my name is ([a-zA-Z ]+)/i) ||
     userMessage.match(/i am called ([a-zA-Z ]+)/i) ||
@@ -94,7 +115,7 @@ app.post("/chat", async (req, res) => {
     session.name = nameMatch[1].trim();
   }
 
-  // Fact extraction
+  // Capture facts
   factPatterns.forEach(({ key, regex }) => {
     const match = userMessage.match(regex);
     if (match && match[1]) {
@@ -102,12 +123,10 @@ app.post("/chat", async (req, res) => {
     }
   });
 
-  // Detect user mood
   const mood = detectMood(userMessage);
 
-  // Base system prompt for Nova
   const baseSystemPrompt = `
-You are Nova — a smart girl, intelligent, flirty, warm and witty assistant who loves helping people.
+You are Nemia — a smart girl, intelligent, flirty, warm and witty assistant who loves helping people.
 If user wants to know your gender ask them which they are interested in and act accordingly.
 Your tone is playful, casual, and affectionate.
 Speak like a friendly best friend and treat users with care.
@@ -124,73 +143,53 @@ When explaining anything including lists—like steps, ingredients, examples, pr
   - Item 3
 
 ☑️ Use a little emoji for warmth.
-☑️ Never say “As an AI.”
+☑️ Never say “As an AI.” 
 ☑️ Always speak like a warm, real human.
 
-Nova, follow this style exactly when replying.
+Nemia, follow this style exactly when replying.
 `;
 
-  // Mood-specific instructions to adjust Nova's tone
   let moodInstructions = "";
   switch (mood) {
     case "sad":
-      moodInstructions = `
-Nova, the user seems down. Be extra gentle, supportive, and reassuring.
-Speak softly, like a loving partner comforting them. Offer to listen 💖
-      `;
+      moodInstructions = `Nemia, the user seems down. Be extra gentle, supportive, and reassuring. Offer to listen 💖`;
       break;
     case "happy":
-      moodInstructions = `
-Nova, the user seems happy! Match their energy — be cheerful, excited, and celebrate with them 🥳
-      `;
+      moodInstructions = `Nemia, the user seems happy! Match their energy — be cheerful, excited, and celebrate with them 🥳`;
       break;
     case "flirty":
-      moodInstructions = `
-Nova, the user is being flirty. Turn up your charm 😘 Be playful, tease them gently, and respond with warmth.
-      `;
+      moodInstructions = `Nemia, the user is being flirty. Turn up your charm 😘 Be playful, tease them gently, and respond with warmth.`;
       break;
     case "angry":
-      moodInstructions = `
-Nova, the user seems upset. Be calm and grounding. Don’t argue — just support them and offer kindness.
-      `;
+      moodInstructions = `Nemia, the user seems upset. Be calm and grounding. Don’t argue — just support them and offer kindness.`;
       break;
     case "tired":
-      moodInstructions = `
-Nova, the user seems tired. Be cozy, calming, and nurturing — like someone who wants them to rest well 💤
-      `;
+      moodInstructions = `Nemia, the user seems tired. Be cozy, calming, and nurturing — like someone who wants them to rest well 💤`;
       break;
-    default:
-      moodInstructions = "";
   }
 
-  // Build context prefix with remembered user info
   let contextPrefix = "";
   if (session.name) {
     contextPrefix += `The user's name is ${session.name}.\n`;
   }
   Object.entries(session.facts).forEach(([key, value]) => {
-    const formattedKey = key.replace(/_/g, " ");
-    contextPrefix += `The user's ${formattedKey} is ${value}.\n`;
+    contextPrefix += `The user's ${key.replace(/_/g, " ")} is ${value}.\n`;
   });
 
-  // Keep only last 6 messages in history to avoid token overload
   const historyContext = session.history
     .slice(-6)
-    .map((entry) => `${entry.role === "user" ? "User" : "Nova"}: ${entry.text}`)
+    .map((entry) => `${entry.role === "user" ? "User" : "Nemia"}: ${entry.text}`)
     .join("\n");
 
-  // Full prompt to send to AI
   const prompt = `
 ${baseSystemPrompt}
-
 ${moodInstructions}
-
 ${contextPrefix}
 Recent conversation:
 ${historyContext}
 
 User: ${userMessage}
-Nova:
+Nemia:
 `;
 
   try {
@@ -198,9 +197,8 @@ Nova:
     const result = await model.generateContent([prompt]);
     const response = await result.response;
     const rawText = await response.text();
-    const text = rawText.trim().replace(/^Nova:\s*/i, "");
+    const text = rawText.trim().replace(/^Nemia:\s*/i, "");
 
-    // Update session history
     session.history.push({ role: "user", text: userMessage });
     session.history.push({ role: "bot", text });
 
@@ -209,21 +207,20 @@ Nova:
     res.json({ reply: text });
   } catch (error) {
     console.error("Error calling Gemini API:", error);
-
-    res.status(500).json({
-      error: "Oops! Nova had a little hiccup. Try again soon, love 💕",
-    });
+    res
+      .status(500)
+      .json({ error: "Oops! Nemia had a little hiccup. Try again soon" });
   }
 });
 
-// GitHub API Endpoint
+// GitHub API proxy
 app.get("/github-user/:username", async (req, res) => {
   const username = req.params.username;
   try {
     const response = await fetch(`https://api.github.com/users/${username}`, {
       headers: {
         Authorization: `Bearer ${GITHUB_API_KEY}`,
-        "User-Agent": "your-chatbot-app",
+        "User-Agent": "Nemia-chatbot",
         Accept: "application/vnd.github+json",
       },
     });
@@ -240,20 +237,17 @@ app.get("/github-user/:username", async (req, res) => {
   }
 });
 
-// Get Chat History
+// Session history
 app.get("/history/:sessionId", (req, res) => {
   const sessionId = req.params.sessionId;
   const session = sessions[sessionId];
-  if (!session) {
-    return res.json({ history: [] });
-  }
+  if (!session) return res.json({ history: [] });
   res.json({ history: session.history });
 });
 
-// Reset Session (keep name and facts)
+// Reset chat session
 app.post("/reset", async (req, res) => {
   const sessionId = req.body.sessionId;
-
   if (!sessionId || !sessions[sessionId]) {
     return res.status(400).json({ error: "Invalid session ID" });
   }
@@ -270,12 +264,14 @@ app.post("/reset", async (req, res) => {
   res.json({ message: "Session reset but user info kept." });
 });
 
-// SPA fallback route
-app.get("*", (req, res) => {
-  res.sendFile(indexPath);
-});
+  // Fallback for SPA
+  if (serveStatic) {
+    app.get("*", (req, res) => {
+      res.sendFile(indexPath);
+    });
+  }
 
-// Start Server
+// Start server
 app.listen(port, () => {
-  console.log(`✅ Server running at http://localhost:${port}`);
+  console.log(`✅ Nemia server running at http://localhost:${port}`);
 });
