@@ -79,6 +79,18 @@ const factPatterns = [
   },
 ];
 
+const timeout = setTimeout(() => {
+  showMessage("Bot is waking up...", "bot");
+}, 3000);
+
+fetch("/api/message", { ... })
+  .then(response => response.json())
+  .then(data => {
+    clearTimeout(timeout);
+    showMessage(data.reply, "bot");
+  });
+
+
 app.post("/chat", async (req, res) => {
   const userMessage = req.body.message;
   const sessionId = req.body.sessionId || "default";
